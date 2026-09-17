@@ -196,7 +196,11 @@
     // the engine zeroes / parks the struct while the sim is paused or crashed
     if (lat === 0 || (alt === 0 && Number.isInteger(lon))) return null;
     if (Math.hypot(lat, lon) < 0.05) return null;
-    return { lat, lon, alt, tilt: f64[i + 3], roll: f64[i + 4], t: Date.now() };
+    return {
+      lat, lon, alt,
+      hdg: f64[i + 2], tilt: f64[i + 3], roll: f64[i + 4], fov: f64[i + 5],
+      t: Date.now(),
+    };
   }
 
   // ----------------------------------------------------------- flight storage
@@ -343,6 +347,7 @@ ${pts}
     } else badReads = 0;
     lastRead = fix;
     paintHud(fix);
+    publish(fix);
 
     if (!recording || paused || !active) return;
     const pts = active.points;
@@ -514,6 +519,32 @@ ${pts}
     drawMap(fix);
   }
   let lastRead2 = null, smoothSpd = null, lastHdg = null;
+
+  // Shared flight state for the visual layer (sim.js) and anything else.
+  let vsPrev = null, vs = 0;
+  function publish(fix) {
+    if (vsPrev && fix.t > vsPrev.t) {
+      const dt = (fix.t - vsPrev.t) / 1000;
+      if (dt > 0.05) {
+        const d = fix.alt - vsPrev.alt;
+        if (Math.abs(d) < 600) vs = vs * 0.8 + (d / dt) * 0.2;  // ignore teleports
+        vsPrev = fix;
+      }
+    } else vsPrev = fix;
+    window.GEFT = {
+      lat: fix.lat, lon: fix.lon, alt: fix.alt,
+      hdg: (fix.hdg % 360 + 360) % 360,
+      pitch: fix.tilt - 90,
+      roll: fix.roll,
+      fov: fix.fov,
+      gs: smoothSpd || 0,       // m/s over the ground
+      vs,                        // m/s vertical
+      track: lastHdg,
+      recording, paused,
+      points: active ? active.points.length : 0,
+      t: fix.t,
+    };
+  }
 
   function drawMap(cur) {
     const p = active ? active.points : [];
