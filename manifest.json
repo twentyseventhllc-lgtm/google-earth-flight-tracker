@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "Google Earth Flight Tracker",
+  "version": "1.0.0",
+  "description": "Records the route you fly in the Google Earth web flight simulator and exports it as KML, GPX or GeoJSON.",
+  "content_scripts": [
+    {
+      "matches": ["https://earth.google.com/*"],
+      "js": ["tracker.js"],
+      "run_at": "document_idle",
+      "world": "MAIN"
+    }
+  ]
+}
