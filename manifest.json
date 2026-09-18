@@ -1,8 +1,14 @@
 {
   "manifest_version": 3,
-  "name": "Google Earth Flight Tracker",
+  "name": "Flight Tracker for Google Earth",
   "version": "1.1.0",
-  "description": "A real aircraft, an MSFS-style glass panel, and route recording (KML / GPX / GeoJSON) for the Google Earth web flight simulator.",
+  "description": "Adds an aircraft, a glass cockpit panel and route recording (KML/GPX/GeoJSON) to the Google Earth flight simulator.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
   "content_scripts": [
     {
       "matches": ["https://earth.google.com/*"],
