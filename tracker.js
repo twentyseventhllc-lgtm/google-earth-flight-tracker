@@ -30,7 +30,7 @@
   const LS_ACTIVE = 'geft.active.v1';
 
   // ------------------------------------------------------------------- state
-  let heap = null, f64 = null, camIdx = null;
+  let heap = null, f64 = null, camIdx = null, camAll = [];
   let locking = false, lastRead = null, badReads = 0;
   let recording = false, paused = false;
   let active = null;      // { id, name, started, points:[], segments:[] }
@@ -58,37 +58,65 @@
   const angDiff = (a, b) => Math.abs(((a - b + 540) % 360) - 180);
 
   // ------------------------------------------------------- heap + camera lock
-  function captureHeap(ms = 2000) {
-    return new Promise((resolve) => {
-      const protos = [WebGLRenderingContext.prototype];
-      if (window.WebGL2RenderingContext) protos.push(WebGL2RenderingContext.prototype);
-      const names = ['bufferData', 'bufferSubData', 'texImage2D', 'texSubImage2D', 'compressedTexImage2D'];
-      const saved = [];
-      let best = null;
-      for (const P of protos) {
-        for (const fn of names) {
-          const orig = P[fn];
-          if (typeof orig !== 'function') continue;
-          saved.push([P, fn, orig]);
-          P[fn] = function (...a) {
-            for (const x of a) {
-              try {
-                const b = x && x.buffer;
-                if (b && b.byteLength > 8e6 && b.byteLength > (best ? best.byteLength : 0)) best = b;
-              } catch (e) { /* ignore */ }
-            }
-            return orig.apply(this, a);
-          };
-        }
+  // The engine's heap is only visible when it hands a typed-array view to WebGL,
+  // which a completely still scene never does. So the hook is installed once and
+  // left in place until the heap turns up, rather than sampled in a short window.
+  const HEAP_FNS = ['bufferData', 'bufferSubData', 'texImage2D', 'texSubImage2D',
+    'compressedTexImage2D', 'compressedTexSubImage2D', 'readPixels'];
+  let heapSaved = null;
+  function installHeapHook() {
+    if (heapSaved || window.__geftHeapSeen) return;
+    const protos = [WebGLRenderingContext.prototype];
+    if (window.WebGL2RenderingContext) protos.push(WebGL2RenderingContext.prototype);
+    heapSaved = [];
+    for (const P of protos) {
+      for (const fn of HEAP_FNS) {
+        const orig = P[fn];
+        if (typeof orig !== 'function') continue;
+        heapSaved.push([P, fn, orig]);
+        P[fn] = function (...a) {
+          for (const x of a) {
+            try {
+              const b = x && x.buffer;
+              if (b && b.byteLength > 8e6 &&
+                  b.byteLength > (window.__geftHeapSeen ? window.__geftHeapSeen.byteLength : 0)) {
+                window.__geftHeapSeen = b;
+              }
+            } catch (e) { /* ignore */ }
+          }
+          return orig.apply(this, a);
+        };
       }
-      setTimeout(() => {
-        for (const [P, fn, orig] of saved) P[fn] = orig;
-        resolve(best);
-      }, ms);
-    });
+    }
+  }
+  function removeHeapHook() {
+    if (!heapSaved) return;
+    for (const [P, fn, orig] of heapSaved) P[fn] = orig;
+    heapSaved = null;
+  }
+  async function captureHeap(ms = 2500) {
+    installHeapHook();
+    const t0 = performance.now();
+    while (performance.now() - t0 < ms) {
+      if (window.__geftHeapSeen) { removeHeapHook(); return window.__geftHeapSeen; }
+      await sleep(120);
+    }
+    return window.__geftHeapSeen || null;
   }
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  function nudgeCamera() {
+    const cv = document.getElementById('earth-canvas');
+    if (!cv) return;
+    const x = window.innerWidth / 2, y = window.innerHeight / 2;
+    const ev = (type, dx, dy) => cv.dispatchEvent(new MouseEvent(type, {
+      bubbles: true, cancelable: true, clientX: x + dx, clientY: y + dy, button: 0, buttons: 1,
+    }));
+    ev('mousedown', 0, 0);
+    for (let k = 1; k <= 6; k++) ev('mousemove', k * 7, k * 3);
+    ev('mouseup', 42, 18);
+  }
 
   function plausible(i) {
     const lon = f64[i - 1], lat = f64[i], alt = f64[i + 1];
@@ -109,7 +137,10 @@
     try {
       if (!heap) {
         setStatus('looking for the engine…');
-        for (let a = 0; a < 6 && !heap; a++) heap = await captureHeap(2500);
+        for (let a = 0; a < 6 && !heap; a++) {
+          nudgeCamera();   // a still scene uploads nothing; make Earth draw
+          heap = await captureHeap(2500);
+        }
         if (!heap) {
           setStatus('engine not found — move the view, then Re-lock');
           setTimeout(() => { if (!camIdx) lockCamera(); }, 8000);
@@ -119,6 +150,30 @@
       }
       setStatus('locating the aircraft…');
       const n = f64.length;
+
+      // Fast path: outside the flight simulator Earth keeps the camera in the URL,
+      // so we can match on the exact lat/lon instead of waiting for movement.
+      const m = location.href.match(/@(-?[\d.]+),(-?[\d.]+),(-?[\d.]+)a/);
+      if (m) {
+        const lat = +m[1], lon = +m[2];
+        const exact = [];
+        for (let i = 1; i < n - 6; i++) {
+          if (Math.abs(f64[i] - lat) < 1e-6 && Math.abs(f64[i - 1] - lon) < 1e-6 &&
+              isFinite(f64[i + 1]) && f64[i + 5] > 5 && f64[i + 5] < 180) exact.push(i);
+          if (exact.length > 64) break;
+        }
+        if (exact.length) {
+          camAll = exact; camIdx = exact[0]; badReads = 0;
+          setStatus(`locked on · ${lat.toFixed(3)}, ${lon.toFixed(3)}`);
+          return true;
+        }
+      }
+
+      // Outside the simulator the camera can be completely still, and the scan
+      // below needs motion. Give Earth a small nudge so it glides for a moment.
+      nudgeCamera();
+      await sleep(120);
+
       const c = [];
       for (let i = 1; i < n - 5; i++) { if (plausible(i)) { c.push(i); if (c.length > 3e6) break; } }
       if (!c.length) {
@@ -169,7 +224,7 @@
         g.n++; groups.set(key, g);
       }
       let win = null;
-      for (const g of groups.values()) {
+      for (const [key, g] of groups) {
         const s = g.best;
         const at = Math.abs(s.tilt);
         let sc = g.n * 10;
@@ -178,9 +233,13 @@
         if (s.mx / Math.max(s.mn, 1e-6) < 2.5) sc += 15;
         if (s.mn > 50 && s.mx < 8000) sc += 15;
         if (Math.abs(f64[s.i]) < 1 && Math.abs(f64[s.i - 1]) < 2) sc -= 30; // null-island noise
-        if (!win || sc > win.sc) win = { sc, idx: s.i };
+        if (!win || sc > win.sc) win = { sc, idx: s.i, key };
       }
       camIdx = win.idx;
+      camAll = survivors.filter((s) =>
+        (f64[s.i].toFixed(5) + ',' + f64[s.i - 1].toFixed(5) + ',' + Math.round(s.alt)) === win.key
+      ).map((s) => s.i);
+      if (!camAll.length) camAll = [camIdx];
       badReads = 0;
       setStatus(`locked on · ${f64[camIdx].toFixed(3)}, ${f64[camIdx - 1].toFixed(3)}`);
       return true;
@@ -646,5 +705,25 @@ ${pts}
   };
   window.__geftRelock = lockCamera;
   window.__geftExport = { toKML, toGPX, toGeoJSON, stats, loadFlights };
+
+  // Low-level access for the flight model: the engine's heap and every copy of the
+  // camera struct. Writing all of them each frame is what lets us fly the camera.
+  window.GEFT_CORE = {
+    get f64() { return f64; },
+    get idx() { return camIdx; },
+    get all() { return camAll.length ? camAll : (camIdx == null ? [] : [camIdx]); },
+    relock: lockCamera,
+    // lon, lat, alt, heading, tilt, roll, fov
+    write(s) {
+      if (!f64 || camIdx == null) return false;
+      const list = this.all;
+      for (const i of list) {
+        f64[i - 1] = s.lon; f64[i] = s.lat; f64[i + 1] = s.alt;
+        f64[i + 2] = s.hdg; f64[i + 3] = s.pitch + 90; f64[i + 4] = s.roll;
+        if (s.fov) f64[i + 5] = s.fov;
+      }
+      return true;
+    },
+  };
   window.__geftState = () => ({ camIdx, recording, points: active ? active.points.length : 0 });
 })();

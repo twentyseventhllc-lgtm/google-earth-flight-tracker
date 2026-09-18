@@ -625,7 +625,7 @@
     const gap = r * 2.70;
     const cy = py + ph * 0.40;
     const cx0 = W / 2 - gap * 2.5;
-    const kts = st.gs * KT, ft = st.alt * FT, fpm = st.vs * FPM;
+    const kts = st.ias, ft = st.altm * FT, fpm = st.vsms * FPM;
     drawASI(cx0 + gap * 0, cy, r, kts);
     drawAI(cx0 + gap * 1, cy, r, st.pitch, st.roll);
     drawALT(cx0 + gap * 2, cy, r, ft);
@@ -643,7 +643,7 @@
       ctx.fillText(v, cx, dy + 5);
     };
     const items = [
-      ['GS', Math.round(kts) + ' KT'],
+      ['IAS', Math.round(kts) + ' KT'],
       ['TRK', st.track == null ? '---' : String(Math.round(st.track)).padStart(3, '0') + '\u00b0'],
       ['ALT', Math.round(ft).toLocaleString('en-US') + ' FT'],
       ['BANK', Math.round(Math.abs(st.roll)) + '\u00b0 ' + (st.roll > 1 ? 'R' : st.roll < -1 ? 'L' : '')],
@@ -655,6 +655,97 @@
     items.forEach((it, i) => cell(x0 + step * i, it[0], it[1], it[0] === 'REC' && st.recording && !st.paused ? '#ff6b60' : null));
   }
 
+  // ------------------------------------------------- flight-model instruments
+  function drawFlightOverlay(st) {
+    const f = st.fl;
+    if (!f) return;
+    const pad = 16, w = 128;
+    const top = Math.max(70, H * 0.12);
+    ctx.save();
+    ctx.textBaseline = 'middle';
+
+    // aircraft + autopilot header
+    ctx.fillStyle = 'rgba(10,12,14,.58)';
+    ctx.beginPath(); ctx.roundRect(pad, top, w, 26, 7); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,.08)'; ctx.lineWidth = 1; ctx.stroke();
+    ctx.fillStyle = '#e9edf2'; ctx.font = fs(11); ctx.textAlign = 'center';
+    ctx.fillText(f.name, pad + w / 2, top + 13);
+
+    // vertical throttle bar
+    const bx = pad, by = top + 38, bw = 26, bh = Math.min(190, H * 0.24);
+    ctx.fillStyle = 'rgba(10,12,14,.58)';
+    ctx.beginPath(); ctx.roundRect(bx, by, bw, bh, 6); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,.08)'; ctx.stroke();
+    const th = bh * clamp(f.thr, 0, 1);
+    const tg = ctx.createLinearGradient(0, by + bh, 0, by);
+    tg.addColorStop(0, '#2fd2ff'); tg.addColorStop(1, '#7ce0ff');
+    ctx.fillStyle = tg;
+    ctx.beginPath(); ctx.roundRect(bx + 3, by + bh - th + 3 - (th ? 3 : 0), bw - 6, Math.max(th - 3, 0), 4); ctx.fill();
+    ctx.fillStyle = 'rgba(190,200,210,.65)'; ctx.font = fs(9); ctx.textAlign = 'center';
+    ctx.fillText(Math.round(f.thr * 100) + '%', bx + bw / 2, by + bh + 12);
+
+    // readout column
+    const cx = bx + bw + 10, cw = w - bw - 10;
+    const rows = [
+      ['AOA', f.alpha.toFixed(1) + '\u00b0', Math.abs(f.alpha) > 14 ? '#ffcf4a' : null],
+      ['G', f.nz.toFixed(2), (f.nz > f.gLim[1] || f.nz < f.gLim[0]) ? '#ff6b60' : null],
+      ['MACH', f.mach.toFixed(2), null],
+      ['AGL', f.agl == null ? '---' : Math.round(f.agl * FT) + ' ft', f.agl != null && f.agl < 300 ? '#ffcf4a' : null],
+      ['FLAP', Math.round(f.flap * 100) + '%', f.flap > 0 ? '#2fd2ff' : null],
+      ['GEAR', f.gear > 0.5 ? 'DOWN' : 'UP', f.gear > 0.5 ? '#4fd35a' : null],
+      ['TRIM', (f.trim >= 0 ? '+' : '') + f.trim.toFixed(2), null],
+    ];
+    ctx.fillStyle = 'rgba(10,12,14,.58)';
+    ctx.beginPath(); ctx.roundRect(cx, by, cw, rows.length * 22 + 6, 7); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,.08)'; ctx.stroke();
+    rows.forEach((r, i) => {
+      const y = by + 14 + i * 22;
+      ctx.textAlign = 'left'; ctx.fillStyle = 'rgba(170,180,192,.6)'; ctx.font = fs(9);
+      ctx.fillText(r[0], cx + 8, y);
+      ctx.textAlign = 'right'; ctx.fillStyle = r[2] || '#dfe5ec'; ctx.font = fs(11);
+      ctx.fillText(r[1], cx + cw - 8, y);
+    });
+
+    // autopilot strip
+    const apOn = f.ap.on && (f.ap.hdg || f.ap.alt || f.ap.spd);
+    if (apOn) {
+      const ay = by + rows.length * 22 + 14;
+      ctx.fillStyle = 'rgba(10,12,14,.58)';
+      ctx.beginPath(); ctx.roundRect(pad, ay, w, 40, 7); ctx.fill();
+      ctx.strokeStyle = 'rgba(79,211,90,.35)'; ctx.stroke();
+      ctx.textAlign = 'left'; ctx.fillStyle = '#4fd35a'; ctx.font = fs(10);
+      ctx.fillText('AUTOPILOT', pad + 8, ay + 12);
+      ctx.font = fs(10); ctx.fillStyle = '#dfe5ec';
+      const bits = [];
+      if (f.ap.hdg) bits.push('HDG ' + String(Math.round(f.ap.tgtHdg)).padStart(3, '0'));
+      if (f.ap.alt) bits.push('ALT ' + Math.round(f.ap.tgtAlt * FT));
+      if (f.ap.spd) bits.push('SPD ' + Math.round(f.ap.tgtSpd));
+      ctx.fillText(bits.join('  '), pad + 8, ay + 28);
+    }
+
+    // warnings
+    const warn = [];
+    if (f.crashed) warn.push(['CRASHED - press R', '#ff6b60']);
+    if (f.stall) warn.push(['STALL', '#ff6b60']);
+    if (f.over) warn.push(['OVERSPEED', '#ffcf4a']);
+    if (f.gpws) warn.push([f.gpws, '#ff6b60']);
+    if (f.onGround && !f.crashed) warn.push(['ON GROUND', '#8b93a0']);
+    warn.forEach((wn, i) => {
+      ctx.textAlign = 'center'; ctx.font = fs(22);
+      ctx.fillStyle = wn[1];
+      ctx.fillText(wn[0], W / 2, H * 0.22 + i * 30);
+    });
+    if (f.msg) {
+      ctx.textAlign = 'center'; ctx.font = fs(12); ctx.fillStyle = 'rgba(233,237,242,.85)';
+      ctx.fillText(f.msg, W / 2, H * 0.16);
+    }
+    if (f.pad) {
+      ctx.textAlign = 'left'; ctx.font = fs(9); ctx.fillStyle = 'rgba(79,211,90,.8)';
+      ctx.fillText('\u2699 ' + f.pad, pad, top - 12);
+    }
+    ctx.restore();
+  }
+
   function drawExteriorHud(st) {
     // thin top-corner readouts only; Earth draws its own ladder and compass
     ctx.textBaseline = 'middle';
@@ -663,7 +754,7 @@
       ctx.beginPath(); ctx.roundRect(x, y, w, h, 7); ctx.fill();
       ctx.strokeStyle = 'rgba(255,255,255,.08)'; ctx.lineWidth = 1; ctx.stroke();
     };
-    const kts = Math.round(st.gs * KT), ft = Math.round(st.alt * FT), fpm = Math.round(st.vs * FPM);
+    const kts = Math.round(st.ias), ft = Math.round(st.altm * FT), fpm = Math.round(st.vsms * FPM);
     const B = 132;                              // clear of Earth's attribution bar
     ctx.textAlign = 'left';
     box(18, H - B, 158, 80);
@@ -703,20 +794,28 @@
     S.lagHdg = (S.lagHdg + dh * clamp(dt * 2.4, 0, 1) + 360) % 360;
     S.turnRate = lerp(S.turnRate, dh / Math.max(dt, 0.001) * 0.35, clamp(dt * 4, 0, 1));
 
+    const fl = window.GEFT_FLIGHT && window.GEFT_FLIGHT.on ? window.GEFT_FLIGHT : null;
     const st = {
       lat: g.lat, lon: g.lon, alt: g.alt, hdg: g.hdg, pitch: g.pitch, roll: g.roll,
       gs: g.gs, vs: g.vs, track: g.track, recording: g.recording, paused: g.paused,
-      points: g.points, turnRate: S.turnRate,
+      points: g.points, turnRate: S.turnRate, fl,
+      // the flight model is authoritative when it is flying
+      ias: fl ? fl.ias : g.gs * KT,
+      vsms: fl ? fl.vs : g.vs,
+      altm: fl ? fl.alt : g.alt,
     };
+    if (fl) { st.pitch = fl.pitch; st.roll = fl.roll; st.hdg = fl.hdg; }
 
     if (mode === 'cockpit') {
       drawWindscreen();
       drawPanel(st);
+      drawFlightOverlay(st);
       return;
     }
 
     // ---- exterior
     drawExteriorHud(st);
+    drawFlightOverlay(st);
     if (!gl) return;
 
     const rollOff = clamp((g.roll - S.lagRoll) * 0.70, -18, 18);
